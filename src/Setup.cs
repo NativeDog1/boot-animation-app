@@ -90,6 +90,18 @@ internal static class Setup
         }
     }
 
+    /// 桌面快捷方式。路径在这里重复写一遍是有原因的：Setup.exe 与 BootAnimation.exe 是两次
+    /// 独立编译，拿不到对方 internal 的常量。两处必须一起改。
+    private static string DesktopLink
+    {
+        get
+        {
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                "开机动画.lnk");
+        }
+    }
+
     private static string LogPath
     {
         get { return Path.Combine(DataDir, "setup.log"); }
@@ -123,7 +135,7 @@ internal static class Setup
         if (silent)
         {
             string error;
-            if (Install("brand", true, false, false, out error)) return 0;
+            if (Install("brand", true, false, false, true, out error)) return 0;
             Log("静默安装失败: " + error);
             return 1;
         }
@@ -195,7 +207,8 @@ internal static class Setup
         panel.Children.Add(muteCheck);
 
         TextBlock where = new TextBlock();
-        where.Text = "安装位置：" + InstallDir + "（每用户安装，不需要管理员权限）";
+        where.Text = "安装位置：" + InstallDir + "（每用户安装，不需要管理员权限）"
+            + Environment.NewLine + "已在桌面和开始菜单创建「开机动画」快捷方式，卸载时会一并删除。";
         where.Foreground = Brushes.Gray;
         where.TextWrapping = TextWrapping.Wrap;
         where.Margin = new Thickness(0, 14, 0, 0);
@@ -228,7 +241,7 @@ internal static class Setup
             status.Foreground = Brushes.Black;
             status.Text = "正在安装…";
             string error;
-            bool ok = Install(clip, auto, now, mute, out error);
+            bool ok = Install(clip, auto, now, mute, false, out error);
             if (ok)
             {
                 status.Foreground = Brushes.Green;
@@ -261,7 +274,7 @@ internal static class Setup
     }
 
     /// 真正的安装动作。返回 false 时 error 里是给人看的原因。
-    private static bool Install(string clip, bool autoStart, bool playNow, bool mute, out string error)
+    private static bool Install(string clip, bool autoStart, bool playNow, bool mute, bool keepExistingClip, out string error)
     {
         error = null;
         try
@@ -291,8 +304,18 @@ internal static class Setup
 
             // 2. 记住选的片头
             Directory.CreateDirectory(DataDir);
-            File.WriteAllText(Path.Combine(DataDir, "settings.txt"), clip);
-            Log("片头设为 " + clip);
+            string settingsFile = Path.Combine(DataDir, "settings.txt");
+            if (keepExistingClip && File.Exists(settingsFile))
+            {
+                // 静默重装/升级时不要动用户已经选好的片头：以前这里无条件写 clip，
+                // 而静默路径硬编码 "brand"，结果是"更新完我的开机动画变回去了"。
+                Log("已保留原有选片，未覆盖");
+            }
+            else
+            {
+                File.WriteAllText(settingsFile, clip);
+                Log("片头设为 " + clip);
+            }
 
             // 3. 开机自启
             using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath))
@@ -311,6 +334,10 @@ internal static class Setup
 
             // 4. 开始菜单快捷方式 → 打开选片窗口
             CreateShortcut(StartMenuLink, TargetExe, "--choose", "选择开机动画的片头");
+
+            // 4b. 桌面快捷方式 —— 同一个目标。用户下载完最直接的入口就是桌面，
+            //     卸载时由 BootAnimation.exe 一并删除。
+            CreateShortcut(DesktopLink, TargetExe, "--choose", "选择开机动画的片头");
 
             // 5. 「应用和功能」里的卸载入口
             long sizeKb = new FileInfo(TargetExe).Length / 1024;

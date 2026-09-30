@@ -223,6 +223,22 @@ internal static class Program
         }
     }
 
+    /// 桌面快捷方式 —— 与开始菜单同一个目标，只是多给用户一个"下载完就能看见"的入口。
+    /// 安装时创建（见 Setup.cs），卸载时删除（见下面的 Uninstall）。
+    ///
+    /// 用 DesktopDirectory 而不是 Desktop：Desktop 是虚拟文件夹，DesktopDirectory 才是真实的
+    /// 文件系统路径，并且跟随"桌面被重定向到 OneDrive"这类设置 —— 写错那个的话，快捷方式会
+    /// 落在一个用户看不见的地方。
+    internal static string DesktopLink
+    {
+        get
+        {
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                "开机动画.lnk");
+        }
+    }
+
     /// 卸载：删自启、删快捷方式、删「应用和功能」条目、删程序目录。
     /// 数据目录（选片、日志）故意保留 —— 重装后选片还在，也不会误删客户的东西。
     private static int Uninstall(bool silent)
@@ -231,7 +247,7 @@ internal static class Program
         {
             MessageBoxResult answer = MessageBox.Show(
                 "确定要卸载「开机动画」吗？" + Environment.NewLine + Environment.NewLine
-                + "会删除：程序文件、开机自启、开始菜单快捷方式，以及「应用和功能」里的条目。"
+                + "会删除：程序文件、开机自启、开始菜单与桌面快捷方式，以及「应用和功能」里的条目。"
                 + Environment.NewLine + Environment.NewLine
                 + "你的选片与日志会保留在：" + Environment.NewLine + DataDir,
                 "卸载开机动画", MessageBoxButton.YesNo, MessageBoxImage.Question);
@@ -259,7 +275,7 @@ internal static class Program
         }
         catch (Exception ex) { Log("删自启失败: " + ex.Message); }
 
-        // 2. 开始菜单快捷方式
+        // 2. 开始菜单与桌面快捷方式
         try
         {
             if (File.Exists(StartMenuLink))
@@ -267,6 +283,14 @@ internal static class Program
                 File.Delete(StartMenuLink);
                 removed++;
                 Log("已删除开始菜单快捷方式");
+            }
+            // 安装时在桌面建的那一份同样要删掉 —— 卸载之后桌面上留一个打不开的图标，
+            // 是最容易被当成"没卸载干净"的那种残留。
+            if (File.Exists(DesktopLink))
+            {
+                File.Delete(DesktopLink);
+                removed++;
+                Log("已删除桌面快捷方式");
             }
         }
         catch (Exception ex) { Log("删快捷方式失败: " + ex.Message); }
