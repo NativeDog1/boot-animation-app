@@ -1,0 +1,14 @@
+# 统一换行：仓库里一律存 LF。
+# PowerShell 5.1 读 UTF-8 靠的是 **BOM**（不是换行），所以 .ps1 保持 LF 没问题，
+# 但 BOM 必须保留 —— 这几个脚本都是 UTF-8 with BOM。
+* text=auto eol=lf
+
+# 解释器与二进制
+*.ps1 text eol=lf
+*.exe binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.mp4 binary

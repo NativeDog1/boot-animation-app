@@ -15,14 +15,14 @@ Windows 登录后立刻全屏播放一段片头动画，播完自动消失。**�
 | `src\BootAnimation.cs` | 播放器全部源码（一个文件，中文注释） |
 | `src\Setup.cs` | 安装程序源码（把播放器内嵌进安装包） |
 | `src\AssemblyInfo.cs` / `src\SetupInfo.cs` | 版本与发布者信息（**发布前请改成你自己的名字**） |
-| `media\*.mp4` | 四段片头的素材（构建时被内嵌进 exe） |
+| `media\*.mp4` | 四段片头素材（2560×1440）—— **`build.ps1` 实际内嵌的就是这一套** |
 | `build\app.ico` | 程序图标（256×256 PNG 封进 ICO） |
 | `build.ps1` | 构建：同时产出播放器与安装包 |
 | `test-install.ps1` | **发客户前必跑**：安装 → 卸载 → 再安装的往返自测 |
 | `install.ps1` | 自用/开发用的脚本式安装（客户不需要它，用安装包即可） |
 | `BootAnimation.exe` | 播放器本体（31.69 MB） |
 | `BootAnimation-Setup.exe` | **发给客户的唯一文件**（31.71 MB） |
-| `media-1440p\*.mp4` | 当前内嵌的成品素材（2560×1440） |
+| `media-1440p\*` | 上一版 1440p 成品母带 + 4 张抽取帧（保留备查，**不参与构建** —— 构建只读 `media\`） |
 
 ---
 
@@ -117,10 +117,14 @@ Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 
 
 | id | 名称 | 大小 |
 |---|---|---|
-| `brand` | DeepSeek 品牌片头 | 4.62 MB |
-| `cyberpunk` | DeepSeek 赛博朋克片头 | 6.61 MB |
-| `awakening` | DeepSeek 数字角色苏醒 | 10.12 MB |
-| `startup` | DeepSeek 启动问题 | 10.32 MB |
+| `brand` | DeepSeek 品牌片头 | 4.78 MB |
+| `cyberpunk` | DeepSeek 赛博朋克片头 | 6.78 MB |
+| `awakening` | DeepSeek 数字角色苏醒 | 10.29 MB |
+| `startup` | DeepSeek 启动问题 | 10.51 MB |
+
+（上表是 `media\` 里那四段、也就是**真正被内嵌进 exe 的**体积，合计约 32.36 MB，
+与 `BootAnimation.exe` 的 32.39 MB 对得上。`media-1440p\` 里的同名文件略小
+（合计约 31.67 MB），那是上一版母带，不参与构建 —— 之前这里写的是它，已改正。）
 
 想换成自己的片子：把 mp4 放进 `media\`，改 `src\BootAnimation.cs` 里 `Clips` 数组的条目和 `build.ps1` 里的 `$clips`，重新 `.\build.ps1`。
 
