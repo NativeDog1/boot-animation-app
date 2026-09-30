@@ -16,3 +16,9 @@ compare/
 *.log
 *.tmp
 ba-uninstall.cmd
+
+# 提交信息草稿：写一次性的长提交说明时用，绝不要提交（已经犯过两次）
+.msg.txt
+.commit-msg*.txt
+.commitmsg.txt
+.release-notes-*.md
