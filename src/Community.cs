@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -148,7 +149,18 @@ internal static class Community
 
         public bool IsValid
         {
-            get { return !string.IsNullOrEmpty(Id) && !string.IsNullOrEmpty(Url) && Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase); }
+            get
+            {
+                if (string.IsNullOrEmpty(Id) || string.IsNullOrEmpty(Url)) return false;
+                if (Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return true;
+#if BATEST
+                // 仅用于本地验证断点续传（tools-serve-test.mjs 是 http 服务）。
+                // 这个分支只在 /define:BATEST 的测试构建里存在，正式产物里没有它，
+                // 所以线上依然**只接受 https 直链**。
+                if (Url.StartsWith("http://127.0.0.1", StringComparison.OrdinalIgnoreCase)) return true;
+#endif
+                return false;
+            }
         }
     }
 
@@ -205,60 +217,67 @@ internal static class Community
         }
     }
 
-    /// 异步下载 → 校验 → 落地 → 设为当前片头。
-    /// 用异步是为了能报真实进度（10–30 MB 的文件，假进度条会让人以为卡死了）。
+    /// 下载社区片段：**支持断点续传与自动重试**。
+    ///
+    /// 为什么换掉原来的 WebClient.DownloadFileAsync：它是单连接、无续传、无重试，
+    /// 一旦中断就整段作废。社区库里 4K 片头动辄几十上百 MB，实测国内下载 51.8 MB
+    /// 的文件会在 26 MB 处断掉 —— 那时用户只能反复重试，而每次都得从 0 开始。
+    ///
+    /// 现在：分块读 → 服务器支持 HTTP Range 就续传 → 中断按 2/4/6/8/10 秒退避重试，
+    /// 最多 6 轮；每轮结束核对字节数，够了才进入 sha256 校验（哈希仍是最终的安全底线，
+    /// 所以即使续传拼上了过期内容也会被拒绝安装）。
     internal static void InstallAsync(InstallRequest r, Dispatcher dispatcher,
-        Action<long, long> onProgress, Action<bool, string> onDone)
+        Action<long, long> onProgress, Action<string> onStatus, Action<bool, string> onDone)
     {
-        if (!r.IsValid) { onDone(false, "链接不完整（缺 id 或 url）"); return; }
+        if (!r.IsValid)
+        {
+            Report(dispatcher, delegate { onDone(false, "链接不完整（缺 id 或 url）"); });
+            return;
+        }
         EnsureTls();
 
         try { Directory.CreateDirectory(Dir); }
-        catch (Exception ex) { onDone(false, "无法创建目录：" + ex.Message); return; }
+        catch (Exception ex)
+        {
+            string dirErr = ex.Message;
+            Report(dispatcher, delegate { onDone(false, "无法创建目录：" + dirErr); });
+            return;
+        }
 
         string target = VideoPath(r.Id);
         string tmp = target + ".part";
-        try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
 
-        WebClient client = new WebClient();
-        client.Headers.Add("User-Agent", "BootAnimation/1.0");
-        Program.Log("开始下载社区片段 " + r.Id + " ← " + r.Url);
-
-        client.DownloadProgressChanged += delegate(object s, DownloadProgressChangedEventArgs e)
+        // 下载放到后台线程：HttpWebRequest 的阻塞读法最简单可靠，
+        // 不用 async/await（这台机器上的 csc 与目标框架都更保守）。
+        Thread worker = new Thread(delegate()
         {
-            if (onProgress != null) onProgress(e.BytesReceived, e.TotalBytesToReceive);
-        };
-
-        client.DownloadFileCompleted += delegate(object s, System.ComponentModel.AsyncCompletedEventArgs e)
-        {
-            try { client.Dispose(); } catch { }
-
-            if (e.Error != null)
+            string error = DownloadToFile(r, tmp, dispatcher, onProgress, onStatus);
+            if (error != null)
             {
-                Program.Log("下载失败: " + e.Error.Message);
-                onDone(false, "下载失败：" + e.Error.Message);
+                Report(dispatcher, delegate { onDone(false, error); });
                 return;
             }
-            if (e.Cancelled) { onDone(false, "已取消"); return; }
 
             try
             {
                 FileInfo info = new FileInfo(tmp);
                 if (r.Bytes > 0 && info.Length != r.Bytes)
                 {
-                    File.Delete(tmp);
-                    onDone(false, "文件大小不符：目录声明 " + r.Bytes + " 字节，实际 " + info.Length + " 字节");
+                    TryDelete(tmp);
+                    string sizeMsg = "文件大小不符：目录声明 " + r.Bytes + " 字节，实际 " + info.Length + " 字节";
+                    Report(dispatcher, delegate { onDone(false, sizeMsg); });
                     return;
                 }
 
                 if (!string.IsNullOrEmpty(r.Sha256))
                 {
+                    Status(dispatcher, onStatus, "下载完成，正在校验 sha256…");
                     string actual = Program.Sha256Of(tmp);
                     if (!string.Equals(actual, r.Sha256, StringComparison.OrdinalIgnoreCase))
                     {
-                        File.Delete(tmp);
+                        TryDelete(tmp);
                         Program.Log("sha256 不符 期望=" + r.Sha256 + " 实际=" + actual);
-                        onDone(false, "校验失败：sha256 不符（文件被改动或下载不完整）");
+                        Report(dispatcher, delegate { onDone(false, "校验失败：sha256 不符（文件被改动或下载不完整）"); });
                         return;
                     }
                 }
@@ -268,26 +287,130 @@ internal static class Community
                 WriteMeta(r.Id, r.Name, r.Author, r.Sha256, info.Length);
                 Program.WriteChosen(r.Id);
                 Program.Log("社区片段安装完成 " + r.Id + "（" + info.Length + " 字节）");
-                onDone(true, null);
+                Report(dispatcher, delegate { onDone(true, null); });
             }
             catch (Exception ex)
             {
                 Program.Log("安装收尾失败: " + ex);
-                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-                onDone(false, ex.Message);
+                TryDelete(tmp);
+                string settleErr = ex.Message;
+                Report(dispatcher, delegate { onDone(false, settleErr); });
             }
-        };
+        });
+        worker.IsBackground = true;
+        worker.Name = "ba-community-download";
+        worker.Start();
+    }
 
-        try
+    /// 把响应体写进 tmp（必要时续传）。返回 null = 已下满；否则是给用户看的原因。
+    private static string DownloadToFile(InstallRequest r, string tmp, Dispatcher dispatcher,
+        Action<long, long> onProgress, Action<string> onStatus)
+    {
+        const int maxAttempts = 6;
+        string lastError = null;
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            client.DownloadFileAsync(new Uri(r.Url), tmp);
+            long have = FileLength(tmp);
+            if (r.Bytes > 0 && have == r.Bytes) return null;              // 上一轮其实已经下满
+            if (r.Bytes > 0 && have > r.Bytes) { TryDelete(tmp); have = 0; } // 残留不合法，重来
+
+            bool readToEnd = false;
+            try
+            {
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(r.Url);
+                req.UserAgent = "BootAnimation/1.1";
+                req.Timeout = 30000;           // 连接与响应头
+                req.ReadWriteTimeout = 60000;  // 单次读：卡住 60 秒就抛，交给重试（默认 5 分钟太久）
+                req.AllowAutoRedirect = true;
+                if (have > 0) req.AddRange(have);
+
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                {
+                    if (have > 0 && resp.StatusCode != HttpStatusCode.PartialContent)
+                    {
+                        // 服务器不支持 Range（返回 200 全量）：只能从头下，别把两段拼一起
+                        Program.Log("服务器不支持续传（HTTP " + (int)resp.StatusCode + "），从头下载");
+                        have = 0;
+                    }
+
+                    long total = r.Bytes > 0 ? r.Bytes : (have + Math.Max(0L, resp.ContentLength));
+                    if (have > 0) Program.Log("续传：本地已有 " + have + " 字节，发送 Range=" + have + "-（HTTP " + (int)resp.StatusCode + "）");
+                    else Program.Log("开始下载 " + r.Id + " ← " + r.Url);
+                    Status(dispatcher, onStatus, have > 0
+                        ? "从 " + FormatMb(have) + " 继续下载…"
+                        : "正在下载…");
+
+                    using (Stream rs = resp.GetResponseStream())
+                    using (FileStream fs = new FileStream(tmp,
+                        have > 0 ? FileMode.Append : FileMode.Create,
+                        FileAccess.Write, FileShare.None, 1 << 20))
+                    {
+                        byte[] buf = new byte[1 << 20];
+                        long got = have;
+                        int n;
+                        while ((n = rs.Read(buf, 0, buf.Length)) > 0)
+                        {
+                            fs.Write(buf, 0, n);
+                            got += n;
+                            // 每次快照一对值再交给 UI 线程：避免闭包读到后续变化的值
+                            long snapshot = got;
+                            long snapshotTotal = total;
+                            Report(dispatcher, delegate { if (onProgress != null) onProgress(snapshot, snapshotTotal); });
+                        }
+                        fs.Flush();
+                    }
+                    readToEnd = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+                Program.Log("下载中断（第 " + attempt + "/" + maxAttempts + " 轮）: " + ex.Message);
+            }
+
+            long now = FileLength(tmp);
+            if (r.Bytes > 0 && now == r.Bytes) return null;
+            if (r.Bytes <= 0 && readToEnd) return null;   // 目录没给字节数：这一轮读到底了就算完成
+
+            if (attempt < maxAttempts)
+            {
+                int waitSec = 2 * attempt;
+                Program.Log("已收 " + now + " 字节，等待 " + waitSec + " 秒后续传");
+                Status(dispatcher, onStatus, "连接中断，已保留 " + FormatMb(now)
+                    + "，" + waitSec + " 秒后自动续传（第 " + (attempt + 1) + "/" + maxAttempts + " 轮）…");
+                try { Thread.Sleep(waitSec * 1000); } catch { }
+            }
         }
-        catch (Exception ex)
-        {
-            try { client.Dispose(); } catch { }
-            Program.Log("发起下载失败: " + ex.Message);
-            onDone(false, ex.Message);
-        }
+
+        return "下载屡次中断：" + (lastError == null ? "多次尝试后仍未下完" : lastError)
+            + "（已保留 " + FormatMb(FileLength(tmp)) + "，再点一次会从断点继续）";
+    }
+
+    private static long FileLength(string path)
+    {
+        try { return File.Exists(path) ? new FileInfo(path).Length : 0; }
+        catch { return 0; }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    /// 把回调丢回 UI 线程（下载在后台线程上跑）。
+    private static void Report(Dispatcher dispatcher, Action action)
+    {
+        if (action == null) return;
+        if (dispatcher == null) { action(); return; }
+        try { dispatcher.BeginInvoke(DispatcherPriority.Normal, action); }
+        catch { action(); }
+    }
+
+    private static void Status(Dispatcher dispatcher, Action<string> onStatus, string text)
+    {
+        if (onStatus == null) return;
+        Report(dispatcher, delegate { onStatus(text); });
     }
 
     private static string FormatMb(long bytes)
@@ -366,6 +489,10 @@ internal static class Community
                     {
                         status.Text = "正在下载 " + FormatMb(got);
                     }
+                },
+                delegate(string note)
+                {
+                    status.Text = note;
                 },
                 delegate(bool ok, string reason)
                 {

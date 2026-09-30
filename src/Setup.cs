@@ -42,7 +42,7 @@ internal sealed class Choice
 
 internal static class Setup
 {
-    private const string Version = "1.0.0";
+    private const string Version = "1.1.0";
     private const string PayloadResource = "BootAnimation.payload.exe";
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string RunValueName = "BootAnimation";
