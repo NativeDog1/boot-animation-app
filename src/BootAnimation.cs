@@ -383,6 +383,7 @@ internal static class Program
         {
             string a = args[i];
             if (a == "--selftest") return SelfTest();
+                else if (a == "--manager") return BootAnimation.Shell.Run();
             else if (a == "--uninstall") uninstall = true;
             else if (a == "--silent") silent = true;
             else if (a == "--list") list = true;

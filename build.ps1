@@ -57,6 +57,8 @@ foreach ($clip in $clips) {
     $appArgs += ('/resource:' + $path + ',' + $clip.res)
 }
 $appArgs += (Join-Path $srcDir 'BootAnimation.cs')
+$appArgs += (Join-Path $srcDir 'Theme.cs')
+$appArgs += (Join-Path $srcDir 'Shell.cs')
 $appArgs += (Join-Path $srcDir 'Community.cs')
 $appArgs += (Join-Path $srcDir 'AssemblyInfo.cs')
 & $csc $appArgs
