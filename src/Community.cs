@@ -193,6 +193,12 @@ internal static class Community
 
     private static bool tlsReady = false;
 
+    /// <summary>给仓库层用的 TLS 开关（它要拉社区目录，同样受 TLS 1.0 的默认值影响）。</summary>
+    internal static void EnsureTlsPublic()
+    {
+        EnsureTls();
+    }
+
     /// .NET Framework 默认只启用 TLS 1.0，而 GitHub / 几乎所有 CDN 都要求 TLS 1.2+，
     /// 不设置的话每一次下载都会以「未能创建 SSL/TLS 安全通道」失败。
     /// （这个坑是实测撞出来的：用真实链接跑第一次就挂在这里。）
@@ -418,6 +424,26 @@ internal static class Community
         double mb = bytes / 1024.0 / 1024.0;
         if (mb < 1.0) return (bytes / 1024.0).ToString("0", CultureInfo.InvariantCulture) + " KB";
         return mb.ToString("0.0", CultureInfo.InvariantCulture) + " MB";
+    }
+
+    /// <summary>
+    /// 从界面的社区页安装一条目录项。
+    ///
+    /// 与 BuildInstallWindow 的区别：那个是给 bootanim:// 深链用的（元数据全在 URL 里），
+    /// 这个是给"界面里点 Install"用的 —— 元数据来自 data/index.json 解析出的
+    /// AnimationInfo。两者最终调用**同一个** InstallAsync，所以断点续传、重试、
+    /// sha256 校验、字节数核对只有一份实现，不会两边行为不一致。
+    /// </summary>
+    internal static Window BuildInstallWindowFor(BootAnimation.AnimationInfo info, Window owner)
+    {
+        InstallRequest r = new InstallRequest();
+        r.Id = info.Id;
+        r.Url = info.RemoteVideoUrl;
+        r.Sha256 = info.Sha256;
+        r.Bytes = info.Bytes;
+        r.Name = info.Name;
+        r.Author = info.Author;
+        return BuildInstallWindow(r, null);
     }
 
     /// 带进度条的小窗口。用户从网页点「装」进来时看到的就是它。
