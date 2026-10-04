@@ -23,6 +23,19 @@ namespace BootAnimation
         public readonly List<StatusItem> Startup = new List<StatusItem>();
         public readonly List<StatusItem> BootRuntime = new List<StatusItem>();
         public readonly List<StatusItem> Animation = new List<StatusItem>();
+
+        /// <summary>
+        /// 环境自检：**开机链路的每个环节是否都到位**。
+        ///
+        /// 为什么单独一组，而不是混进 BootRuntime：
+        ///   "开机时先露出桌面"这类问题的成因分散在好几个环节
+        ///   （原生封面窗口、首帧图缓存、快速版、计划任务）。
+        ///   用户（尤其是第一次用的）需要一眼看到"我的机器上还缺哪一环"，
+        ///   而不是在十几条状态里自己找。所以这组放在诊断页最前面，
+        ///   每条都直接给"缺什么 + 点哪里修"。
+        /// </summary>
+        public readonly List<StatusItem> SelfCheck = new List<StatusItem>();
+
         public string Summary;
         public StatusLevel SummaryLevel = StatusLevel.Ok;
         public DateTime RanAt = DateTime.Now;
@@ -30,6 +43,7 @@ namespace BootAnimation
         public List<StatusItem> All()
         {
             List<StatusItem> all = new List<StatusItem>();
+            all.AddRange(SelfCheck);
             all.AddRange(Application);
             all.AddRange(Startup);
             all.AddRange(BootRuntime);
@@ -70,10 +84,16 @@ namespace BootAnimation
                 Program.ExePath));
 
             report.Application.Add(new StatusItem("Administrator", Platform.IsAdministrator() ? "Yes" : "No",
-                Platform.IsAdministrator() ? StatusLevel.Ok : StatusLevel.Warn,
+                StatusLevel.Ok,
                 Platform.IsAdministrator()
-                    ? "可以注册登录计划任务（启动最早）"
-                    : "非管理员：计划任务注册会被拒绝，自启只能走 Run 键"));
+                    ? "管理员：可以注册计划任务；也可以注册到所有用户"
+                    : "非管理员：**依然可以注册登录计划任务**（走任务计划的 COM API，"
+                      + "TASK_LOGON_INTERACTIVE_TOKEN + RunLevel=0，实测不需要管理员）。"
+                      + "注意 schtasks.exe 的 /SC ONLOGON 反而会报 Access is denied，"
+                      + "那是命令行的限制，不是权限不够"));
+
+            // ── 1b) 环境自检：开机链路各环节是否到位 ────────────────────────
+            RunSelfCheck(report);
 
             // ── 2) 启动项（真实读取注册表与任务计划） ──────────────────────
             string exe = Program.ExePath;
@@ -253,6 +273,123 @@ namespace BootAnimation
             return sha.Substring(0, 16) + "…";
         }
 
+        /// <summary>
+        /// 环境自检：逐环节确认"登录后动画能立刻铺满屏幕"所需的东西是否都在。
+        ///
+        /// 这份检查是这轮排查"开机时先露出桌面"的直接产物 —— 那个问题不是单一原因，
+        /// 而是好几个环节各自可能缺一块。任何一个环节缺失，用户看到的表现都是
+        /// "桌面先出现、动画后出现"。所以这里把每个环节单独列出来，
+        /// 让用户（尤其是新用户）能自己看出缺哪一环、以及怎么补。
+        ///
+        /// 只读，不改任何东西。
+        /// </summary>
+        private static void RunSelfCheck(DiagnosticsReport report)
+        {
+            // ── ① 原生封面窗口：负责"登录界面一退场就铺满屏幕" ──────────────
+            string native = Program.NativePlayerPath;
+            if (native == null)
+            {
+                report.SelfCheck.Add(new StatusItem("原生封面窗口", "✕ 缺失", StatusLevel.Bad,
+                    "找不到 NativePlayer.exe。它是「登录界面退场瞬间铺满屏幕」的关键 —— "
+                    + "缺了它，动画只能等主程序把窗口建好（登录压力下要好几秒），"
+                    + "那几秒里就会看到桌面。修复：重新运行 install.ps1 或安装包"));
+            }
+            else
+            {
+                // 注册状态：Run 键里有没有 BootAnimationPoster
+                string runAll = Platform.RunKeyCommand();
+                bool posterRegistered = runAll != null
+                    && runAll.IndexOf(native, StringComparison.OrdinalIgnoreCase) >= 0;
+                report.SelfCheck.Add(new StatusItem("原生封面窗口", posterRegistered ? "✓ 已注册" : "! 未注册",
+                    posterRegistered ? StatusLevel.Ok : StatusLevel.Warn,
+                    posterRegistered
+                        ? native
+                        : "NativePlayer.exe 在，但启动项里没有它。修复：点下方「修复启动项」"));
+            }
+
+            // ── ② 首帧图缓存：原生窗口要立刻有画面就得靠它 ──────────────────
+            //
+            // 判据用「缓存目录里有没有图」，而不是「某个片头的图在不在」——
+            // 因为本程序支持的片头来源有三种（内嵌 / 用户文件 / 社区下载），
+            // 解析"当前是哪一个"要跑一遍选片逻辑，那既慢又可能在半途改动状态。
+            // 而用户真正关心的是"我这份缓存准备好了没有"，扫目录就能如实回答。
+            int posterCount = CountFiles(Path.Combine(Program.DataDirectory, "posters"), "*.jpg");
+            report.SelfCheck.Add(new StatusItem("首帧图缓存（封面）",
+                posterCount > 0 ? "✓ " + posterCount + " 张" : "! 还没有",
+                posterCount > 0 ? StatusLevel.Ok : StatusLevel.Warn,
+                posterCount > 0
+                    ? "封面帧已缓存。原生封面窗口就是用它做到「登录界面一退场就有画面」"
+                    : "还没有生成。首次播放某段片头时会当场生成（那一次会慢一点），之后一直用缓存。"
+                      + "也可以运行一次 --prepare 把全部片头提前生成"));
+
+            // ── ③ 快速版（H.264）：决定"出画"要多久 ─────────────────────────
+            int fastCount = CountFiles(Path.Combine(Program.DataDirectory, "fast"), "*.mp4");
+            report.SelfCheck.Add(new StatusItem("快速版转码",
+                fastCount > 0 ? "✓ " + fastCount + " 段" : "! 首次播放时生成",
+                fastCount > 0 ? StatusLevel.Ok : StatusLevel.Warn,
+                fastCount > 0
+                    ? "H.264 / 8-bit / 1440p。原始素材若是 4K HEVC 10-bit，"
+                      + "解码器初始化会明显更慢，快速版把这段省掉"
+                    : "还没有转码。首次播放后会生成，之后走快速版 —— 出画更快"));
+
+            // ── ④ 氛围背景（预模糊图）：省掉运行时的 BlurEffect ──────────────
+            int blurCount = CountFiles(Path.Combine(Program.DataDirectory, "blur"), "*.jpg");
+            report.SelfCheck.Add(new StatusItem("氛围背景（预模糊）",
+                blurCount > 0 ? "✓ " + blurCount + " 张" : "（仅在 auto/ambient 模式下需要）",
+                StatusLevel.Ok,
+                blurCount > 0
+                    ? "已预生成，运行时不再建 GPU 模糊层（那一步占构造窗口耗时的四成多）"
+                    : "当前片头不切氛围模式就不需要它。切到 auto/ambient 后首次运行会生成"));
+
+            // ── ④ 启动方式：计划任务比 Run 键早 20 秒以上 ────────────────────
+            bool? task = Platform.TaskRegistered();
+            if (task == true)
+            {
+                report.SelfCheck.Add(new StatusItem("登录触发方式", "✓ 计划任务", StatusLevel.Ok,
+                    "由任务计划服务在登录时拉起（实测开机约 20 秒），比 Run 键早 20 秒以上"));
+            }
+            else if (task == false)
+            {
+                report.SelfCheck.Add(new StatusItem("登录触发方式", "! 未注册计划任务", StatusLevel.Warn,
+                    "当前只有 Run 键可用。Run 键要等 explorer 处理完才被拉起"
+                    + "（实测 Shell 启动通知到进程启动之间隔 27.7 秒），"
+                    + "开机越忙、开机动画出现得越晚。修复：点「修复启动项」（不需要管理员）"));
+            }
+            else
+            {
+                report.SelfCheck.Add(new StatusItem("登录触发方式", "? 查询失败", StatusLevel.Warn,
+                    "无法查询计划任务状态，可能被安全软件拦截了查询接口"));
+            }
+
+            // ── ⑤ 上一次开机实际花多久（有数据才显示，不编） ────────────────
+            double last = LastBootToWindowMs();
+            if (last > 0)
+            {
+                StatusLevel lv = last < 3000 ? StatusLevel.Ok : (last < 8000 ? StatusLevel.Warn : StatusLevel.Bad);
+                report.SelfCheck.Add(new StatusItem("上次开机实际耗时", Math.Round(last).ToString("0",
+                    CultureInfo.InvariantCulture) + " ms", lv,
+                    last < 3000
+                        ? "从进程启动到窗口上屏的实测耗时，正常"
+                        : "偏慢。常见原因：安全软件的文件实时防护在过滤每次读取、"
+                          + "或系统盘是机械硬盘。白名单本程序所在目录通常能明显改善"));
+            }
+        }
+
+        /// <summary>
+        /// 数一个目录里匹配的文件个数（目录不存在就返回 0，不抛异常）。
+        ///
+        /// 自检用：只关心"这类缓存准备了没有"，不需要知道具体是哪个片头。
+        /// </summary>
+        private static int CountFiles(string dir, string pattern)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return 0;
+                return Directory.GetFiles(dir, pattern).Length;
+            }
+            catch { return 0; }
+        }
+
         private static string EstimateBudget(AnimationInfo a)
         {
             if (a.Width <= 0 || a.Height <= 0) return "未知";
@@ -353,18 +490,21 @@ namespace BootAnimation
             }
 
             // 5) 重新注册
+            //
+            // 这里原来写成"非管理员就跳过计划任务，改用 Run 键"。**那个判断是错的**：
+            // 走任务计划的 COM API（Schedule.Service）注册 AtLogon 任务，
+            // 用的是 TASK_LOGON_INTERACTIVE_TOKEN + RunLevel=0，实测**不需要管理员**。
+            // 只有 schtasks.exe 的 /SC ONLOGON 会报 Access is denied ——
+            // 那是命令行的限制，不是权限不够。
+            // 所以现在无论是不是管理员都先试计划任务：它是启动最早的那条路
+            //（实测开机约 20 秒，而 Run 键要等 explorer 处理完，晚 20 秒以上）。
             bool taskRegistered = false;
-            if (Platform.IsAdministrator())
             {
                 string taskErr;
                 taskRegistered = Platform.RegisterLogonTask(exe, false, out taskErr);
                 steps.Add(new RepairStep(taskRegistered
-                    ? "已注册登录计划任务（启动最早）"
+                    ? "已注册登录计划任务（启动最早的那条路）"
                     : "计划任务注册失败，改用 Run 键：" + taskErr, taskRegistered));
-            }
-            else
-            {
-                steps.Add(new RepairStep("非管理员：跳过计划任务（注册会被拒绝），使用 Run 键", true));
             }
 
             string runErr;
@@ -381,9 +521,10 @@ namespace BootAnimation
                 + "，计划任务 " + (afterTask == true ? "已注册" : "未注册"), afterOk));
 
             if (afterOk && afterTask == true)
-                steps.Add(new RepairStep("结论：启动项已修复，且启动了最快的路径（计划任务）", true));
+                steps.Add(new RepairStep("结论：启动项已修复，且用上了启动最早的那条路（计划任务）", true));
             else if (afterOk)
-                steps.Add(new RepairStep("结论：启动项可用（Run 键）。计划任务需要管理员权限，当前用户不是管理员", true));
+                steps.Add(new RepairStep("结论：启动项可用（Run 键），但计划任务没能注册成功。"
+                    + "这不需要管理员权限，通常是被安全软件拦下了 —— 把本程序加入白名单后重试一次", true));
             else
                 steps.Add(new RepairStep("结论：修复未成功，需要手工检查注册表权限", false));
 

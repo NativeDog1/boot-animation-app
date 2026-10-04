@@ -78,6 +78,12 @@ namespace BootAnimation
         private readonly NoticeHost notices = new NoticeHost();
         private readonly TextBlock sidebarStatus = Ds.Text("", Theme.TMicro, Theme.Fg3, FontWeights.Normal);
 
+        /// <summary>
+        /// 首次运行引导层。默认 Visibility.Hidden，只有 IsFirstRun() 为真时才显示
+        /// （见 Loaded 里那段）。保持字段是为了让「开始使用」按钮能把它收起来。
+        /// </summary>
+        private Grid welcomeLayer;
+
         private Page current = Page.Home;
         private LibraryFilter filter = LibraryFilter.All;
         private MediaPlayerBox hero;
@@ -125,6 +131,20 @@ namespace BootAnimation
             // 通知层盖在最上面（不占布局）
             root.Children.Add(notices);
 
+            /**
+             * 首次运行引导（只在第一次自动弹出）。
+             *
+             * 为什么需要它：这个软件的用法不是"打开就能看懂"——
+             * 用户要先明白「选一段动画 → 它会在下次开机登录时播放」，
+             * 而"开机时先露出桌面"这类问题的成因（原生封面窗口/缓存/启动项）
+             * 对新用户完全不可见。与其让用户去翻文档或来问，
+             * 不如第一次打开就把三件最要紧的事说清楚。
+             *
+             * 放在通知层之后 = 盖在应用之上；点「开始使用」才关闭。
+             */
+            welcomeLayer = BuildWelcome();
+            root.Children.Add(welcomeLayer);
+
             Content = root;
 
             store.Changed += delegate { Refresh(); };
@@ -136,6 +156,12 @@ namespace BootAnimation
                 statusTimer.Tick += delegate { UpdateSidebarStatus(); };
                 statusTimer.Start();
                 LoadLibraryAsync();
+
+                // 首次运行才显示引导，之后不再打扰
+                if (Program.IsFirstRun())
+                {
+                    if (welcomeLayer != null) welcomeLayer.Visibility = Visibility.Visible;
+                }
             };
             Closed += delegate
             {
@@ -154,6 +180,125 @@ namespace BootAnimation
 
         // ══════════════════════════════════════════════════ 页面背景（Wallpaper Driven）
 
+        /// <summary>
+        /// 首次运行引导。
+        ///
+        /// 只讲四件"新用户不知道就会踩坑"的事，不做功能罗列：
+        ///   1. 这个软件做什么（选一段动画，下次开机登录时播放）
+        ///   2. 默认已经是真全屏（拉伸填满），不需要调
+        ///   3. 开机时它会自己接管（不先露桌面），播完自动进桌面
+        ///   4. 同一次开机只播一次
+        ///
+        /// 另外给两个入口：跑一次环境自检、打开数据目录 —— 这两件事新用户最可能马上需要。
+        /// 刻意保持简短：引导越长越像说明书，用户越会直接关掉。
+        /// </summary>
+        private Grid BuildWelcome()
+        {
+            Grid layer = new Grid();
+            // 用现成的重遮罩画刷（已 Freeze）。引导要完全压住下面的界面，
+            // 所以用最重的那一层，而不是自己拼一个半透明色。
+            layer.Background = Theme.OverlayHeavy;
+            layer.Visibility = Visibility.Hidden;   // 由 Loaded 决定是否显示
+
+            StackPanel col = Ds.Col(Theme.S5);
+            col.MaxWidth = 620;
+            col.HorizontalAlignment = HorizontalAlignment.Center;
+            col.VerticalAlignment = VerticalAlignment.Center;
+
+            col.Children.Add(Ds.HeroTitle("开机动画"));
+
+            TextBlock lede = Ds.Text(
+                "选一段动画，它会在你下次开机登录完成的瞬间铺满屏幕播放一遍，播完自动进入桌面。",
+                Theme.TBody, Theme.Fg2, FontWeights.Normal);
+            lede.TextWrapping = TextWrapping.Wrap;
+            lede.Margin = new Thickness(0, Theme.S2, 0, Theme.S4);
+            col.Children.Add(lede);
+
+            col.Children.Add(Ds.Divider(0, Theme.S4));
+
+            col.Children.Add(WelcomePoint("1", "在「动画库」选片头",
+                "内嵌素材、你自己的视频文件、社区下载的动画都可以。选好后按「应用」。"));
+            col.Children.Add(WelcomePoint("2", "画面默认就是真全屏",
+                "拟合方式是拉伸填满，不会出现上下空缺。想改成裁切填满或整帧显示，在首页或设置里切换。"));
+            col.Children.Add(WelcomePoint("3", "开机时它会自己接管",
+                "登录界面一消失就出现，不会先露出桌面；播完直接进桌面，不需要点击。如果没做到，去「诊断」页看环境自检。"));
+            col.Children.Add(WelcomePoint("4", "同一次开机只播一次",
+                "不会重复播放。想再看可以随时在首页点预览。"));
+
+            StackPanel actions = Ds.Bar(Theme.S3);
+            actions.Margin = new Thickness(0, Theme.S5, 0, 0);
+            actions.HorizontalAlignment = HorizontalAlignment.Left;
+
+            actions.Children.Add(Ds.Action("开始使用", ActionLevel.Primary, delegate
+            {
+                Program.MarkWelcomeSeen();
+                if (welcomeLayer != null) welcomeLayer.Visibility = Visibility.Hidden;
+            }));
+
+            actions.Children.Add(Ds.Action("运行环境自检", ActionLevel.Secondary, delegate
+            {
+                Program.MarkWelcomeSeen();
+                if (welcomeLayer != null) welcomeLayer.Visibility = Visibility.Hidden;
+                current = Page.Diagnostics;
+                Refresh();
+            }));
+
+            actions.Children.Add(Ds.Action("打开数据目录", ActionLevel.Tertiary, delegate
+            {
+                try { System.Diagnostics.Process.Start("explorer.exe", Program.DataDirectory); }
+                catch (Exception ex) { notices.Show("无法打开", ex.Message, NoticeLevel.Error, null); }
+            }));
+
+            col.Children.Add(actions);
+
+            TextBlock hint = Ds.Text(
+                "这个引导只出现一次。以后想再看，删掉数据目录里的 welcomed.txt 即可。",
+                Theme.TMicro, Theme.Fg3, FontWeights.Normal);
+            hint.Margin = new Thickness(0, Theme.S4, 0, 0);
+            col.Children.Add(hint);
+
+            Border card = new Border();
+            card.Background = Theme.Card;
+            card.BorderBrush = Theme.LineStrong;
+            card.BorderThickness = new Thickness(1);
+            card.CornerRadius = new CornerRadius(Theme.RDialog);
+            card.Padding = new Thickness(Theme.S8);
+            card.Child = col;
+            card.HorizontalAlignment = HorizontalAlignment.Center;
+            card.VerticalAlignment = VerticalAlignment.Center;
+
+            layer.Children.Add(card);
+            return layer;
+        }
+
+        /// <summary>引导里的一条：序号 + 标题 + 一句话说明。</summary>
+        private UIElement WelcomePoint(string index, string title, string detail)
+        {
+            Grid row = new Grid();
+            ColumnDefinition numCol = new ColumnDefinition();
+            numCol.Width = new GridLength(34);
+            ColumnDefinition textCol = new ColumnDefinition();
+            textCol.Width = new GridLength(1, GridUnitType.Star);
+            row.ColumnDefinitions.Add(numCol);
+            row.ColumnDefinitions.Add(textCol);
+            row.Margin = new Thickness(0, 0, 0, Theme.S4);
+
+            TextBlock num = Ds.Text(index, Theme.TMicro, Theme.Fg3, FontWeights.SemiBold);
+            num.VerticalAlignment = VerticalAlignment.Top;
+            num.Margin = new Thickness(0, 3, 0, 0);
+            Grid.SetColumn(num, 0);
+            row.Children.Add(num);
+
+            StackPanel text = Ds.Col(3);
+            text.Children.Add(Ds.Text(title, Theme.TBody, Theme.Fg, FontWeights.SemiBold));
+            TextBlock d = Ds.Text(detail, Theme.TMeta, Theme.Fg3, FontWeights.Normal);
+            d.TextWrapping = TextWrapping.Wrap;
+            text.Children.Add(d);
+            Grid.SetColumn(text, 1);
+            row.Children.Add(text);
+
+            return row;
+        }
         /// <summary>
         /// 三层背景：当前动画 Artwork（放大模糊）→ 暗化 → 晕影。
         ///
@@ -992,6 +1137,16 @@ namespace BootAnimation
             grid.ColumnDefinitions.Add(b);
 
             StackPanel left = Ds.Col(Theme.S5);
+            /**
+             * **环境自检放在最前面。**
+             *
+             * 用户的真实关切是"我这份装好没有、开机能不能一次到位"，
+             * 而不是"Application / Animation 各自的状态"。
+             * 所以把决定"会不会先露出桌面"的那几项（原生封面窗口、首帧图缓存、
+             * 快速版、登录触发方式）单独成组、放在第一眼位置，
+             * 每一条都直接写"缺什么 + 怎么补"，用户不用自己找。
+             */
+            left.Children.Add(BuildStatusGroup("环境自检（决定开机能不能一次到位）", report.SelfCheck));
             left.Children.Add(BuildStatusGroup("APPLICATION", report.Application));
             left.Children.Add(BuildStatusGroup("ANIMATION", report.Animation));
 

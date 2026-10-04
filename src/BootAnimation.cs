@@ -2599,6 +2599,41 @@ internal static class Program
     /// <summary>已确保存在的数据目录（日志、配置、缓存都在这下面）。</summary>
     internal static string DataDirectory { get { return DataDir; } }
 
+    /// <summary>
+    /// 首次运行引导的标记文件。
+    ///
+    /// 单独一个文件、不塞进 settings.txt：settings.txt 的格式被旧版依赖
+    /// （一行一个片头 id），往里加字段会让旧版读到脏值。
+    /// </summary>
+    internal static string WelcomeMarkerPath
+    {
+        get { return Path.Combine(DataDir, "welcomed.txt"); }
+    }
+
+    /// <summary>
+    /// 是不是第一次运行（还没看过引导）。
+    ///
+    /// 判据就是标记文件在不在 —— 不做"看注册表/看文件时间"之类的推断，
+    /// 因为那些在用户手动重装、或迁移数据目录时都会给出错误结论。
+    /// </summary>
+    internal static bool IsFirstRun()
+    {
+        try { return !File.Exists(WelcomeMarkerPath); }
+        catch { return false; }
+    }
+
+    /// <summary>标记"引导已看过"，之后不再自动弹出。</summary>
+    internal static void MarkWelcomeSeen()
+    {
+        try
+        {
+            Directory.CreateDirectory(DataDir);
+            File.WriteAllText(WelcomeMarkerPath,
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
+        }
+        catch { }
+    }
+
     /// <summary>让仓库层也能启用 TLS（它要拉社区目录）。只做一次。</summary>
     internal static void EnsureTls()
     {
