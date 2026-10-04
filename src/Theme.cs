@@ -30,20 +30,25 @@ namespace BootAnimation
             return brush;
         }
 
-        // —— 表面：石墨梯度，与网站同一套观感 ——
-        public static readonly SolidColorBrush Bg = Frozen(0x0a, 0x0b, 0x0d);
-        public static readonly SolidColorBrush Bg2 = Frozen(0x10, 0x12, 0x16);
-        public static readonly SolidColorBrush Card = Frozen(0x16, 0x18, 0x1d);
-        public static readonly SolidColorBrush Raise = Frozen(0x1d, 0x20, 0x27);
+        // —— 表面：三级深色（需求给定）。比之前更中性的冷灰，不是纯黑也不是蓝黑 ——
+        public static readonly SolidColorBrush Bg = Frozen(0x09, 0x0a, 0x0c);
+        public static readonly SolidColorBrush Bg2 = Frozen(0x0d, 0x0f, 0x12);
+        public static readonly SolidColorBrush Card = Frozen(0x11, 0x13, 0x18);
+        public static readonly SolidColorBrush Raise = Frozen(0x17, 0x1a, 0x20);
 
-        // —— 描边：靠 alpha 白，在任何面上都对 ——
-        public static readonly SolidColorBrush Line = Alpha(255, 255, 255, 0.08);
-        public static readonly SolidColorBrush LineStrong = Alpha(255, 255, 255, 0.14);
+        // —— 描边：靠 alpha 白，在任何面上都对。侧栏不再逐项描边，只用这一档做分隔 ——
+        public static readonly SolidColorBrush Line = Alpha(255, 255, 255, 0.07);
+        public static readonly SolidColorBrush LineStrong = Alpha(255, 255, 255, 0.13);
 
-        // —— 文字：冷白三级（与网站一致，那三个值是对比度算过的） ——
-        public static readonly SolidColorBrush Fg = Frozen(0xe9, 0xeb, 0xef);
-        public static readonly SolidColorBrush Fg2 = Frozen(0xa8, 0xaf, 0xbd);
-        public static readonly SolidColorBrush Fg3 = Frozen(0x8a, 0x93, 0xa5);
+        /// <summary>覆盖在视频上的半透明底（播放控制条、卡片播放按钮）。</summary>
+        public static readonly SolidColorBrush Overlay = Alpha(9, 10, 12, 0.72);
+        /// <summary>Studio 模式下更重的遮罩（控制条浮在画面上时必须能压住亮部）。</summary>
+        public static readonly SolidColorBrush OverlayHeavy = Alpha(9, 10, 12, 0.88);
+
+        // —— 文字：三级冷白（需求给定） ——
+        public static readonly SolidColorBrush Fg = Frozen(0xf4, 0xf5, 0xf7);
+        public static readonly SolidColorBrush Fg2 = Frozen(0xa7, 0xad, 0xb7);
+        public static readonly SolidColorBrush Fg3 = Frozen(0x6f, 0x76, 0x82);
 
         // —— 品牌红：只用于主操作与当前状态，绝不整屏铺 ——
         public static readonly SolidColorBrush Brand = Frozen(0xe1, 0x1d, 0x2e);
@@ -64,7 +69,7 @@ namespace BootAnimation
             return brush;
         }
 
-        // —— 间距刻度（需求：宽屏要有呼吸感，所以刻度拉得比工具窗口大） ——
+        // —— 间距刻度：4 / 8 / 12 / 16 / 24 / 32 / 48 / 64（需求给定的空间系统） ——
         public const double S1 = 4;
         public const double S2 = 8;
         public const double S3 = 12;
@@ -72,19 +77,36 @@ namespace BootAnimation
         public const double S5 = 24;
         public const double S6 = 32;
         public const double S7 = 48;
+        public const double S8 = 64;
 
-        // —— 圆角 ——
+        // —— 圆角（需求给定）：按钮 8 / 输入 8 / 卡片 10–12 / 对话框 12–16 ——
+        public const double RButton = 8;
         public const double R1 = 6;
         public const double R2 = 10;
+        public const double RCard = 12;
+        public const double RDialog = 14;
         public const double R3 = 14;
 
-        // —— 字级（需求：标题 32–48 / 小节 18–22 / 正文 14–16 / 元信息 12–14） ——
+        // —— 字级（需求给定）：Hero 40–56 / 标题 36–48 / 小节 20–24 / 正文 14–16 / 元信息 12–14 ——
+        /// <summary>Hero 标题：当前动画的名字。</summary>
+        public const double THero = 44;
+        /// <summary>页面大标题。</summary>
         public const double TTitle = 34;
-        public const double TH1 = 26;
-        public const double TH2 = 19;
+        public const double TH1 = 28;
+        public const double TH2 = 21;
+        /// <summary>小节标题 20–24 的下沿。</summary>
+        public const double TSection = 20;
         public const double TBody = 15;
         public const double TMeta = 13;
         public const double TMicro = 12;
+
+        /// <summary>全大写小标签的字符间距。英文小标签要"散"一点才像成熟软件，不是挤在一起。</summary>
+        public const double TrackLabel = 1.2;
+
+        /// <summary>动效时长（需求给定）：快 120 / 普通 200 / 慢 320。</summary>
+        public const int AnimFast = 120;
+        public const int AnimNormal = 200;
+        public const int AnimSlow = 320;
 
         /// <summary>系统字体栈：Windows 用 Segoe UI Variable / Segoe UI，中文回落雅黑。</summary>
         public static readonly FontFamily Font = new FontFamily("Segoe UI Variable Text, Segoe UI, Microsoft YaHei, sans-serif");
@@ -92,9 +114,9 @@ namespace BootAnimation
         /// <summary>等宽：id / sha256 / 命令行。</summary>
         public static readonly FontFamily Mono = new FontFamily("Cascadia Mono, Consolas, Courier New, monospace");
 
-        // —— 外壳尺寸（需求 S2）：默认 1440×900、最小 1100×700、侧栏 240–260 ——
-        public const double WinDefaultW = 1440;
-        public const double WinDefaultH = 900;
+        // —— 外壳尺寸（需求 S2）：默认 1600×1000、最小 1100×700、侧栏 240–260 ——
+        public const double WinDefaultW = 1600;
+        public const double WinDefaultH = 1000;
         public const double WinMinW = 1100;
         public const double WinMinH = 700;
         public const double NavW = 248;
