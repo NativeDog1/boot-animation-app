@@ -194,54 +194,16 @@ function Register-RunKey {
     }
 }
 
-function Register-Task {
-    # 登录时触发 + 高优先级。这两项合起来才是"尽可能早"：
-    #   - AtLogOn 由任务计划服务在登录时拉起，不必等 explorer 把 Run 键轮询到
-    #   - Priority 7 让它在开机那几十个竞争进程里先拿到 CPU（视频首帧解码很吃这个）
-    #
-    # 这里**不设** StartDelay。New-ScheduledTaskSettingsSet 返回的对象在 Windows
-    # PowerShell 5.1 上没有 StartDelay 属性，写它就是抛异常 —— 而那个异常会被下面的
-    # catch 当成"没有权限"记下来，把真正的失败原因藏掉。新建任务本来就没有启动延迟。
-    $action = New-ScheduledTaskAction -Execute $targetExe -Argument $bootArgs
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew -Priority 7
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
-        -Description '登录后播放开机动画' -Force | Out-Null
-    Step ('已注册计划任务: ' + $TaskName + '（登录触发，高优先级）')
-}
-
-# 能不能注册计划任务，先看权限，而不是"先试一次再说"。
-# 非管理员注册 ONLOGON 任务会被直接拒绝（本机实测三种写法都是 Access is denied），
-# 所以"试一下"只会每次安装都打一行失败信息，既慢又让人以为装坏了。
-function Test-IsAdmin {
-    try {
-        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
-        return (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole(
-            [Security.Principal.WindowsBuiltInRole]::Administrator)
-    } catch { return $false }
-}
-
-if ($Method -eq 'task') {
-    try { Register-Task } catch {
-        Say ('  注册计划任务失败: ' + $_.Exception.Message)
-        Say '  改用不需要管理员的 Run 键。'
-        Register-RunKey
-        $Method = 'run'
-    }
-} elseif ($Method -eq 'run') {
-    Register-RunKey
-} else {
-    # auto：只有管理员才值得试计划任务；普通用户直接走 Run 键。
-    if (Test-IsAdmin) {
-        try { Register-Task; $registered = $true } catch {
-            Step ('计划任务注册失败，退回 Run 键: ' + $_.Exception.Message)
-        }
-    } else {
-        Step '当前不是管理员，直接用 Run 键（计划任务需要管理员权限）'
-    }
-    if (-not $registered) { Register-RunKey; $Method = 'run' }
-}
+# 计划任务的注册统一由下面 3a2 那一段负责（Task Scheduler COM API，**不需要管理员**）。
+#
+# 这里原来还有一条 schtasks 路线（Register-ScheduledTask / Test-IsAdmin），
+# 它需要管理员，非管理员跑就会打印 "Access is denied" —— 而那行失败信息会让用户
+# 以为"计划任务用不了、只能退回慢的 Run 键"，实际上 COM API 那条路一直是成功的
+# （实测：开机约 20 秒拉起，比 Run 键的 27.7 秒早得多）。
+#
+# 同一个目的写两条路、其中一条必然失败，只会误导用户，所以这里直接标记为走计划任务，
+# 真正的注册交给 3a2。
+$Method = 'task'
 
 # 3a. 启动延迟诊断采样器（一次性，不是常驻）。
 #
