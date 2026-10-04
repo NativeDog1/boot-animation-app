@@ -42,10 +42,13 @@ internal sealed class Choice
 
 internal static class Setup
 {
-    private const string Version = "1.1.0";
+    private const string Version = "1.2.0";
     private const string PayloadResource = "BootAnimation.payload.exe";
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string RunValueName = "BootAnimation";
+    /// 与 install.ps1 里的 $TaskName 必须完全一致：两条安装路径要么都写同一个任务，
+    /// 要么卸载时就会剩一个删不掉的自启项。
+    private const string TaskName = "BootAnimation";
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\BootAnimation";
 
     private static readonly Choice[] Clips = new Choice[]
@@ -318,11 +321,15 @@ internal static class Setup
             }
 
             // 3. 开机自启
+            //
+            // 参数里**不带 --delay**。那个值是叠加在系统自身延迟之上的：Run 键的进程本来
+            // 就要等登录后若干秒才被拉起，再睡 3 秒，客户看到的就是「登录之后过一会儿才播」。
+            // 之前的默认值正好是 3 —— 那是这个反馈的一半原因。
             using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath))
             {
                 if (autoStart)
                 {
-                    key.SetValue(RunValueName, "\"" + TargetExe + "\" --play --delay 3" + (mute ? " --mute" : ""));
+                    key.SetValue(RunValueName, "\"" + TargetExe + "\" --play" + (mute ? " --mute" : ""));
                     Log("已写入自启键" + (mute ? "（静音）" : "（带声音）"));
                 }
                 else
@@ -330,6 +337,21 @@ internal static class Setup
                     key.DeleteValue(RunValueName, false);
                     Log("按用户选择未写自启键");
                 }
+            }
+
+            // 3b. 能更早就更早：优先注册计划任务，失败才留在 Run 键。
+            //     AtLogOn 由任务计划服务在登录时拉起，不必等 explorer 把 Run 键轮询到。
+            //     非管理员注册登录触发的任务在部分系统上会被拒绝，所以这一步必须是可失败的。
+            if (autoStart)
+            {
+                if (TryRegisterLogonTask(mute)) Log("已注册计划任务（登录触发，高优先级）");
+                else Log("计划任务注册不了，沿用 Run 键");
+            }
+            else
+            {
+                // 取消自动播放必须把两条路都断掉。只删 Run 键的话，上一次安装留下的
+                // 计划任务还在，客户会看到"我明明取消了它还在开机播"。
+                RemoveLogonTask();
             }
 
             // 4. 开始菜单快捷方式 → 打开选片窗口
@@ -385,6 +407,58 @@ internal static class Setup
         {
             error = ex.Message;
             Log("安装异常: " + ex);
+            return false;
+        }
+    }
+
+    /// 用 schtasks.exe 注册登录触发的计划任务，成功返回 true。
+    ///
+    /// 走命令行而不是 TaskScheduler COM / PowerShell cmdlet，唯一的原因是**零依赖**：
+    /// 这是每用户安装，装的时候不一定有管理员，也不该去引用一个额外的程序集。
+    /// schtasks 是 Windows 自带的，失败时它会明确报错，我们据此退回 Run 键。
+    ///
+    /// SC /RL LIMITED /F /IT：当前用户、受限权限（不弹 UAC 提升）、交互式会话里运行。
+    /// 高优先级（/P 7）是刻意加的：开机那几十秒有几十个进程在抢 CPU，而 4K 视频的首帧
+    /// 解码需要 CPU，不抬优先级就会被排在后面 —— 那是"过一会儿才播"的另一半原因。
+    private static bool TryRegisterLogonTask(bool mute)
+    {
+        string arguments = "--play" + (mute ? " --mute" : "");
+        // 内层不加引号：/TR 的值本身要用一对引号包住，里面再嵌引号会让 schtasks 解析错。
+        // 安装目录是 %LOCALAPPDATA%\Programs\BootAnimation，不含空格。
+        string line = "/Create /TN \"" + TaskName + "\" /TR \"" + TargetExe + " " + arguments + "\""
+            + " /SC ONLOGON /RL LIMITED /F /IT /P 7";
+        return RunTool("schtasks.exe", line, 30000);
+    }
+
+    /// 删掉计划任务（不存在时 schtasks 返回非 0，属正常，不记日志）。
+    private static void RemoveLogonTask()
+    {
+        RunTool("schtasks.exe", "/Delete /TN \"" + TaskName + "\" /F", 20000);
+    }
+
+    private static bool RunTool(string file, string arguments, int timeoutMs)
+    {
+        try
+        {
+            ProcessStartInfo psi = new ProcessStartInfo(file, arguments);
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.RedirectStandardError = true;
+            psi.RedirectStandardOutput = true;
+            Process p = Process.Start(psi);
+            string stderr = p.StandardError.ReadToEnd();
+            p.StandardOutput.ReadToEnd();
+            p.WaitForExit(timeoutMs);
+            if (p.ExitCode != 0)
+            {
+                Log(file + " 失败(" + p.ExitCode + "): " + stderr.Trim());
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log(file + " 异常: " + ex.Message);
             return false;
         }
     }
